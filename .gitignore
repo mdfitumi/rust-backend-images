@@ -3,3 +3,4 @@ tmp/
 *.iml
 .idea/
 Cargo.lock
+.ionide/
