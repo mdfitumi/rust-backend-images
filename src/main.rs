@@ -41,6 +41,17 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
                     })
                     .await;
                 println!("text {}", text);
+                let filepath = format!("./tmp/{}", sanitize_filename::sanitize(&content_type.get_name().expect("unable to read filename")));
+                println!("{}", filepath);
+                let mut f = web::block(|| std::fs::File::create(filepath))
+                    .await
+                    .unwrap();
+                match base64::decode(&text) {
+                    Ok(bytes) => web::block(move || f.write_all(&bytes).map(|_| ())).await?,
+                    Err(..) => {
+                        unimplemented!("handle url links is not supported yet");
+                    }
+                }
             }
         }
     }
