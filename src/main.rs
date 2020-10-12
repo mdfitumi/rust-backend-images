@@ -7,26 +7,45 @@ use futures::{StreamExt, TryStreamExt};
 async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
     // iterate over multipart stream
     while let Ok(Some(mut field)) = payload.try_next().await {
+        println!("field {:?}", field);
         let content_type = field.content_disposition().unwrap();
-        let filename = content_type.get_filename().unwrap();
-        let filepath = format!("./tmp/{}", sanitize_filename::sanitize(&filename));
-        println!("{}", filepath);
+        println!("content_type {}", content_type);
+        match content_type.get_filename() {
+            Some(filename) => {
+                let filepath = format!("./tmp/{}", sanitize_filename::sanitize(&filename));
+                println!("{}", filepath);
 
-        // File::create is blocking operation, use threadpool
-        let mut f = web::block(|| std::fs::File::create(filepath))
-            .await
-            .unwrap();
+                // File::create is blocking operation, use threadpool
+                let mut f = web::block(|| std::fs::File::create(filepath))
+                    .await
+                    .unwrap();
 
-        // Field in turn is stream of *Bytes* object
-        while let Some(chunk) = field.next().await {
-            let data = chunk.unwrap();
-            // filesystem operations are blocking, we have to use threadpool
-            f = web::block(move || f.write_all(&data).map(|_| f)).await?;
+                // Field in turn is stream of *Bytes* object
+                while let Some(chunk) = field.next().await {
+                    let data = chunk.unwrap();
+                    // filesystem operations are blocking, we have to use threadpool
+                    f = web::block(move || f.write_all(&data).map(|_| f)).await?;
+                }
+            }
+            None => {
+                // accept text
+                let text = field
+                    .fold("".to_owned(), |acc, result| async {
+                        match result {
+                            Ok(val) => {
+                                acc + std::str::from_utf8(&val)
+                                    .expect("unable to read form value text")
+                            }
+                            Err(..) => acc,
+                        }
+                    })
+                    .await;
+                println!("text {}", text);
+            }
         }
     }
     Ok(HttpResponse::Ok().into())
 }
-
 
 fn index() -> HttpResponse {
     let html = r#"<html>
@@ -38,9 +57,7 @@ fn index() -> HttpResponse {
             </form>
         </body>
     </html>"#;
-    HttpResponse::Ok()
-        .content_type("text/html")
-        .body(html)
+    HttpResponse::Ok().content_type("text/html").body(html)
 }
 
 #[actix_web::main]
