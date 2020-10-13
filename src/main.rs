@@ -24,15 +24,12 @@ async fn create_and_save_preview(
 async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
     // iterate over multipart stream
     while let Ok(Some(field)) = payload.try_next().await {
-        println!("field {:?}", field);
         let content_type = field
             .content_disposition()
             .expect("invalid multipart content");
-        println!("content_type {}", content_type);
         match content_type.get_filename() {
             Some(filename) => {
                 let filepath = format!("./tmp/{}", sanitize_filename::sanitize(&filename));
-                println!("{}", filepath);
 
                 // File::create is blocking operation, use threadpool
                 let mut f = web::block(|| std::fs::File::create(filepath))
@@ -70,12 +67,10 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
                         }
                     })
                     .await;
-                println!("text {}", text);
                 let filename = sanitize_filename::sanitize(
                     &content_type.get_name().expect("unable to read filename"),
                 );
                 let filepath = format!("./tmp/{}", filename);
-                println!("{}", filepath);
                 let mut f = web::block(|| std::fs::File::create(filepath))
                     .await
                     .unwrap();
