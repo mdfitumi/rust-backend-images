@@ -41,7 +41,12 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
                     })
                     .await;
                 println!("text {}", text);
-                let filepath = format!("./tmp/{}", sanitize_filename::sanitize(&content_type.get_name().expect("unable to read filename")));
+                let filepath = format!(
+                    "./tmp/{}",
+                    sanitize_filename::sanitize(
+                        &content_type.get_name().expect("unable to read filename")
+                    )
+                );
                 println!("{}", filepath);
                 let mut f = web::block(|| std::fs::File::create(filepath))
                     .await
@@ -49,7 +54,17 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
                 match base64::decode(&text) {
                     Ok(bytes) => web::block(move || f.write_all(&bytes).map(|_| ())).await?,
                     Err(..) => {
-                        unimplemented!("handle url links is not supported yet");
+                        let image = reqwest::get(&text)
+                            .await
+                            .map_err(|_| {
+                                HttpResponse::BadRequest().body("unable to get image from url")
+                            })?
+                            .bytes()
+                            .await
+                            .map_err(|_| {
+                                HttpResponse::BadRequest().body("invalid image response")
+                            })?;
+                        web::block(move || f.write_all(&image).map(|_| ())).await?
                     }
                 }
             }
