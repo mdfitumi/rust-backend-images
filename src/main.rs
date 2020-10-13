@@ -4,11 +4,30 @@ use actix_multipart::Multipart;
 use actix_web::{middleware, web, App, Error, HttpResponse, HttpServer};
 use futures::{StreamExt, TryStreamExt};
 
+async fn create_and_save_preview(
+    buffer: &[u8],
+    filename: &str,
+) -> std::result::Result<(), image::ImageError> {
+    let image = image::load_from_memory(buffer)?;
+    let filename = format!("./tmp/preview_{}", filename);
+
+    web::block(move || {
+        image
+            .resize(100, 100, image::imageops::FilterType::Triangle)
+            .save(filename)
+    })
+    .await
+    .expect("unable to save image preview");
+    Ok(())
+}
+
 async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
     // iterate over multipart stream
-    while let Ok(Some(mut field)) = payload.try_next().await {
+    while let Ok(Some(field)) = payload.try_next().await {
         println!("field {:?}", field);
-        let content_type = field.content_disposition().unwrap();
+        let content_type = field
+            .content_disposition()
+            .expect("invalid multipart content");
         println!("content_type {}", content_type);
         match content_type.get_filename() {
             Some(filename) => {
@@ -18,17 +37,28 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
                 // File::create is blocking operation, use threadpool
                 let mut f = web::block(|| std::fs::File::create(filepath))
                     .await
-                    .unwrap();
+                    .expect("unable to create image file");
 
-                // Field in turn is stream of *Bytes* object
-                while let Some(chunk) = field.next().await {
-                    let data = chunk.unwrap();
-                    // filesystem operations are blocking, we have to use threadpool
-                    f = web::block(move || f.write_all(&data).map(|_| f)).await?;
-                }
+                let multipart_data = field
+                    .fold(Vec::new(), |mut acc, result| async {
+                        match result {
+                            Ok(val) => {
+                                acc.extend(val);
+                                acc
+                            }
+                            Err(..) => acc,
+                        }
+                    })
+                    .await;
+                let multipart_data_file = multipart_data.clone();
+                web::block(move || f.write_all(&multipart_data_file)).await?;
+
+                create_and_save_preview(&multipart_data, filename.clone())
+                    .await
+                    .map_err(|_| HttpResponse::BadRequest().body("cannot make image preview"))?;
             }
             None => {
-                // accept text
+                // accept base64 images or url links
                 let text = field
                     .fold("".to_owned(), |acc, result| async {
                         match result {
@@ -41,32 +71,32 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
                     })
                     .await;
                 println!("text {}", text);
-                let filepath = format!(
-                    "./tmp/{}",
-                    sanitize_filename::sanitize(
-                        &content_type.get_name().expect("unable to read filename")
-                    )
+                let filename = sanitize_filename::sanitize(
+                    &content_type.get_name().expect("unable to read filename"),
                 );
+                let filepath = format!("./tmp/{}", filename);
                 println!("{}", filepath);
                 let mut f = web::block(|| std::fs::File::create(filepath))
                     .await
                     .unwrap();
-                match base64::decode(&text) {
-                    Ok(bytes) => web::block(move || f.write_all(&bytes).map(|_| ())).await?,
-                    Err(..) => {
-                        let image = reqwest::get(&text)
-                            .await
-                            .map_err(|_| {
-                                HttpResponse::BadRequest().body("unable to get image from url")
-                            })?
-                            .bytes()
-                            .await
-                            .map_err(|_| {
-                                HttpResponse::BadRequest().body("invalid image response")
-                            })?;
-                        web::block(move || f.write_all(&image).map(|_| ())).await?
-                    }
-                }
+                let bytes = match base64::decode(&text) {
+                    Ok(bytes) => bytes,
+                    Err(..) => reqwest::get(&text)
+                        .await
+                        .map_err(|_| {
+                            HttpResponse::BadRequest().body("unable to get image from url")
+                        })?
+                        .bytes()
+                        .await
+                        .map_err(|_| HttpResponse::BadRequest().body("invalid image response"))
+                        .map(|bytes| bytes.to_vec())?,
+                };
+                let image_bytes = bytes.clone();
+                web::block(move || f.write_all(&image_bytes).map(|_| f)).await?;
+
+                create_and_save_preview(&bytes, &filename)
+                    .await
+                    .map_err(|_| HttpResponse::BadRequest().body("cannot make image preview"))?;
             }
         }
     }
