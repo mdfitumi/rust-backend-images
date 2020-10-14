@@ -73,7 +73,7 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
                 let filepath = format!("./tmp/{}", filename);
                 let mut f = web::block(|| std::fs::File::create(filepath))
                     .await
-                    .unwrap();
+                    .expect("unable to create image file");
                 let bytes = match base64::decode(&text) {
                     Ok(bytes) => bytes,
                     Err(..) => reqwest::get(&text)
